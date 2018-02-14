@@ -1,19 +1,36 @@
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpHandler
-import java.io.InputStream
-import java.net.URLDecoder
 import java.nio.charset.Charset
+import java.sql.Timestamp
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 internal class WebHandler : HttpHandler {
     private final val charset: Charset = Charsets.UTF_8
 
     override fun handle(t: HttpExchange) {
-        println(t.requestURI.path)
-        when (t.requestURI.path) {
-            "/tmsacoin" -> handleIndex(t)
-            "/tmsacoin/create" -> handleCreateForm(t)
-            "/tmsacoin/internal/create" -> handleCreateRequest(t)
+        try {
+            println("Received request: ${t.requestMethod} ${t.requestURI.path} ; User: ${t.getUser()}")
+            val cleanRequestPath = t.requestURI.path.replace(Regex("/$"), "")
+            when {
+                cleanRequestPath == "/tmsacoin" -> handleIndex(t)
+                cleanRequestPath == "/tmsacoin/new_account" -> handleNewAccountForm(t)
+                cleanRequestPath == "/tmsacoin/mint" -> handleMintForm(t)
+                cleanRequestPath == "/tmsacoin/transfer" -> handleTransferForm(t)
+                cleanRequestPath == "/tmsacoin/login" -> handleLoginForm(t)
+                cleanRequestPath == "/tmsacoin/balance" -> handleBalanceRequest(t, t.getUser())
+                cleanRequestPath.matches(Regex("/tmsacoin/balance/[a-zA-Z]{1,32}")) -> handleBalanceRequest(t, cleanRequestPath.split("/").last())
+                cleanRequestPath == "/tmsacoin/internal/new_account" -> handleNewAccountRequest(t)
+                cleanRequestPath == "/tmsacoin/internal/mint" -> handleMintRequest(t)
+                cleanRequestPath == "/tmsacoin/internal/transfer" -> handleTransferRequest(t)
+                cleanRequestPath == "/tmsacoin/internal/login" -> handleLoginRequest(t)
+                cleanRequestPath == "/tmsacoin/internal/logout" -> handleLogoutRequest(t)
+                else -> handleNotFound(t)
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            t.sendError(text = "Internal error")
         }
     }
 
@@ -21,75 +38,109 @@ internal class WebHandler : HttpHandler {
         httpExchange.sendSuccess(fileName = "index.html")
     }
 
-    private fun handleCreateForm(httpExchange: HttpExchange) {
-        httpExchange.sendSuccess(fileName = "create.html")
+    private fun handleNewAccountForm(httpExchange: HttpExchange) {
+        httpExchange.sendSuccess(fileName = "new_account.html")
     }
 
-    private fun handleCreateRequest(httpExchange: HttpExchange) {
-        if (httpExchange.requestMethod != "POST") httpExchange.sendInvalidMethod()
-        val parameters = httpExchange.parameterMap()
-        if (!parameters.containsKey("username") || !parameters.containsKey("password")) {
-            httpExchange.sendMalformed(text = "Must have username and password fields")
-            return
+    private fun handleMintForm(httpExchange: HttpExchange) {
+        if (DBHandler.isAdmin(httpExchange.getUser())) {
+            httpExchange.sendSuccess(fileName = "mint.html")
+        } else {
+            httpExchange.sendUnauthorized(text = "You are not authorized to mint TMSACoin.")
         }
-        val createResult = DBHandler.createUser(parameters["username"]!!, parameters["password"]!!)
+    }
+
+    private fun handleTransferForm(httpExchange: HttpExchange) {
+        httpExchange.sendSuccess(fileName = "transfer.html")
+    }
+
+    private fun handleLoginForm(httpExchange: HttpExchange) {
+        httpExchange.sendSuccess(fileName = "login.html")
+    }
+
+    private fun handleBalanceRequest(httpExchange: HttpExchange, user: String?) {
+        httpExchange.sendSuccess(text =
+        """
+            <pre>Balance of $user: ${DBHandler.getUserBalance(user)}</pre>
+        """.trimIndent())
+    }
+
+    private fun handleNewAccountRequest(httpExchange: HttpExchange) {
+        httpExchange.requirePost()
+        httpExchange.requireParameter("username")
+        httpExchange.requireParameter("password")
+        val createResult = DBHandler.createUser(httpExchange.parameter("username"), httpExchange.parameter("password"))
+        if (DBHandler.isAdmin(httpExchange.getUser()) &&
+                httpExchange.hasParameter("admin") &&
+                httpExchange.parameter("admin") == "on") {
+
+            DBHandler.makeAdmin(httpExchange.parameter("username"))
+        }
         if (createResult.first) {
-            httpExchange.sendSuccess(text = createResult.second)
-        } else
+            httpExchange.sendSuccess(text = "Done.")
+        } else {
             httpExchange.sendError(text = createResult.second)
-
+        }
     }
 
-    private fun HttpExchange.sendSuccess(fileName: String? = null, text: String? = null) {
-        sendResponse(200, fileName, text)
+    private fun handleMintRequest(httpExchange: HttpExchange) {
+        if (DBHandler.isAdmin(httpExchange.getUser())) {
+            httpExchange.requirePost()
+            httpExchange.requireParameter("recipient")
+            httpExchange.requireParameter("amount")
+            val storeResult = DBHandler.storeTransaction(null, httpExchange.parameter("recipient"), httpExchange.parameter("amount").toFloat())
+            if (storeResult.first) {
+                httpExchange.sendSuccess(text = "Done.")
+            } else {
+                httpExchange.sendError(text = storeResult.second)
+            }
+        } else {
+            httpExchange.sendUnauthorized(text = "You are not authorized to mint TMSACoin.")
+        }
     }
 
-    private fun HttpExchange.sendMalformed(fileName: String? = null, text: String? = null) {
-        sendResponse(400, fileName, text)
+    private fun handleTransferRequest(httpExchange: HttpExchange) {
+        httpExchange.requirePost()
+        httpExchange.requireParameter("to")
+        httpExchange.requireParameter("amount")
+        val storeResult = DBHandler.storeTransaction(httpExchange.getUser(), httpExchange.parameter("to"), httpExchange.parameter("amount").toFloat())
+        if (storeResult.first) {
+            httpExchange.sendSuccess(text = "Done.")
+        } else {
+            httpExchange.sendError(text = storeResult.second)
+        }
     }
 
-    private fun HttpExchange.sendUnauthorized(fileName: String? = null, text: String? = null) {
-        sendResponse(401, fileName, text)
+    private fun handleLoginRequest(httpExchange: HttpExchange) {
+        httpExchange.requirePost()
+        httpExchange.requireParameter("username")
+        httpExchange.requireParameter("password")
+
+//        handleLogoutRequest(httpExchange) // Delete pre-existing token
+
+        val username = httpExchange.parameter("username")
+        val password = httpExchange.parameter("password")
+        if (DBHandler.verifyPassword(username, password)) {
+            httpExchange.writeCookie(
+                    "tmsacoin-session",
+                    DBHandler.createSession(
+                            username,
+                            Timestamp.from(Instant.now().plus(7, ChronoUnit.DAYS))
+                    ),
+                    60 * 60 * 24 * 7
+            )
+            httpExchange.sendSuccess(text = "Login successful.")
+        } else {
+            httpExchange.sendUnauthorized(text = "Invalid login.")
+        }
     }
 
-    private fun HttpExchange.sendInvalidMethod(fileName: String? = null, text: String? = null) {
-        sendResponse(405, fileName, text)
+    private fun handleLogoutRequest(httpExchange: HttpExchange) {
+        DBHandler.deleteSession(httpExchange.getToken())
+        httpExchange.sendSuccess(text = "Done.")
     }
 
-    private fun HttpExchange.sendError(fileName: String? = null, text: String? = null) {
-        sendResponse(500, fileName, text)
-    }
-
-    private fun HttpExchange.sendResponse(code: Int, fileName: String? = null, text: String? = null) {
-
-        val response = readText(fileName, text).toByteArray(charset = Charsets.UTF_8)
-        sendResponseHeaders(code, response.size.toLong())
-        responseBody.write(response)
-    }
-
-    private fun readHtmlFile(fileName: String) = javaClass.classLoader.getResource(fileName).readText(charset)
-
-    private fun HttpExchange.text(): String {
-        return this.requestBody.text()
-    }
-
-    private fun InputStream.text(): String {
-        return this.reader().readText()
-    }
-
-    private fun String.asParameterMap(): Map<String, String> {
-        return this.split("(?<!(\\\\)*\\)&").map { it.split("(?<!(\\\\)*\\)=") }.map { it[0] to it[1] }.toMap()
-    }
-
-    private fun String.urlDecoded(): String {
-        return URLDecoder.decode(this, "UTF-8")
-    }
-
-    private fun HttpExchange.parameterMap(): Map<String, String> {
-        return this.text().urlDecoded().asParameterMap()
-    }
-
-    private fun readText(fileName: String? = null, text: String? = null): String {
-        return if (fileName != null) readHtmlFile(fileName) else text ?: ""
+    private fun handleNotFound(httpExchange: HttpExchange) {
+        httpExchange.sendNotFound(text = "URL not found.")
     }
 }

@@ -1,9 +1,8 @@
+
 import java.security.MessageDigest
 import java.security.SecureRandom
-import java.sql.Connection
-import java.sql.DriverManager
-import java.sql.PreparedStatement
-import java.sql.ResultSet
+import java.sql.*
+import java.time.Instant
 import kotlin.experimental.and
 import kotlin.math.roundToLong
 
@@ -16,7 +15,13 @@ internal object DBHandler {
     private lateinit var addTransactionStatement: PreparedStatement
     private lateinit var getUserByUsername: PreparedStatement
     private lateinit var createUser: PreparedStatement
-    private lateinit var userPasswordInfo: PreparedStatement
+    private lateinit var getUserPassword: PreparedStatement
+    private lateinit var getUserSalt: PreparedStatement
+    private lateinit var storeSession: PreparedStatement
+    private lateinit var getSessionInfo: PreparedStatement
+    private lateinit var clearSession: PreparedStatement
+    private lateinit var userIsAdmin: PreparedStatement
+    private lateinit var makeAdmin: PreparedStatement
 
     private fun connection(): Connection {
         if (!initDone) init()
@@ -30,11 +35,18 @@ internal object DBHandler {
         initDone = true
         ensureTablesExist()
         initPreparedStatements()
+
+         Runtime.getRuntime().addShutdownHook(object : Thread() {
+             override fun run() {
+                 DBHandler.shutdown()
+             }
+         })
     }
 
     private fun ensureTablesExist() {
-        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS transactions(id BIGINT IDENTITY PRIMARY KEY NOT NULL, user_from VARCHAR(32), user_to VARCHAR(32) NOT NULL, amount INT)")
-        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS users(username VARCHAR(32) PRIMARY KEY, pw_hash VARCHAR(128) NOT NULL, salt VARCHAR(20) NOT NULL, balance_cache INT DEFAULT 0 NOT NULL)")
+        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS transactions(id BIGINT IDENTITY PRIMARY KEY NOT NULL, user_from VARCHAR(32), user_to VARCHAR(32) NOT NULL, amount FLOAT)")
+        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS users(username VARCHAR(32) PRIMARY KEY, isAdmin BOOLEAN DEFAULT FALSE, pw_hash VARCHAR(128) NOT NULL, salt VARCHAR(20) NOT NULL, balance_cache FLOAT DEFAULT 0 NOT NULL)")
+        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS sessions(token VARCHAR(128) PRIMARY KEY, username VARCHAR(32) NOT NULL, expiry TIMESTAMP NOT NULL)")
     }
 
     private fun initPreparedStatements() {
@@ -43,7 +55,13 @@ internal object DBHandler {
         addTransactionStatement = connection().prepareStatement("INSERT INTO transactions (user_from, user_to, amount) VALUES (?, ?, ?)")
         getUserByUsername = connection().prepareStatement("SELECT * FROM users WHERE username = ?")
         createUser = connection().prepareStatement("INSERT INTO users (username, pw_hash, salt) VALUES (?,?,?)")
-        userPasswordInfo = connection().prepareStatement("SELECT pw_hash, salt FROM users WHERE username = ?")
+        getUserPassword = connection().prepareStatement("SELECT pw_hash FROM users WHERE username = ?")
+        getUserSalt = connection().prepareStatement("SELECT salt FROM users WHERE username = ?")
+        storeSession = connection().prepareStatement("INSERT INTO sessions (token, username, expiry) VALUES (?,?,?)")
+        getSessionInfo = connection().prepareStatement("SELECT username, expiry FROM sessions WHERE token = ?")
+        clearSession = connection().prepareStatement("DELETE FROM sessions WHERE token = ?")
+        userIsAdmin = connection().prepareStatement("SELECT isAdmin FROM users WHERE username = ?")
+        makeAdmin = connection().prepareStatement("UPDATE users SET isAdmin = TRUE WHERE username = ?")
     }
 
     fun createUser(username: String, password: String): Pair<Boolean, String?> {
@@ -60,34 +78,35 @@ internal object DBHandler {
         return true to "User successfully created"
     }
 
-    fun storeTransaction(fromUser: String?, toUser: String, amount: Int) {
+    fun storeTransaction(fromUser: String?, toUser: String, amount: Float): Pair<Boolean, String?> {
         connection()
-        if (!userExists(fromUser, true) || !userExists(toUser)) throw IllegalArgumentException("Users must exist")
+        if (amount < 0) return false to "Amount must be positive"
+        if (!userExists(fromUser, true) || !userExists(toUser)) return false to "Users must exist"
         val fromBalance = if (fromUser != null) getUserBalance(fromUser) else amount
-        if (fromBalance < amount) throw IllegalArgumentException("Insufficient balance")
+        if (fromBalance < amount) return false to "Insufficient balance"
         addTransactionStatement.setString(1, fromUser)
         addTransactionStatement.setString(2, toUser)
-        addTransactionStatement.setInt(3, amount)
+        addTransactionStatement.setFloat(3, amount)
         addTransactionStatement.execute()
         addTransactionStatement.clearParameters()
         if (fromUser != null) setUserBalanceCache(fromUser, fromBalance - amount)
         setUserBalanceCache(toUser, getUserBalance(toUser) + amount)
+        return true to null
     }
 
-    fun getUserBalance(user: String?): Int {
+    fun getUserBalance(user: String?): Float {
         connection()
-        if (user == null) return 0
-        if (!userExists(user)) throw IllegalArgumentException("User must exist")
+        if (!userExists(user)) return 0f
         getUserCacheStatement.setString(1, user)
         val resultSet: ResultSet = getUserCacheStatement.executeQuery()
         getUserCacheStatement.clearParameters()
-        return if (resultSet.next()) resultSet.getInt(1) else 0
+        return if (resultSet.next()) resultSet.getFloat(1) else 0f
     }
 
-    private fun setUserBalanceCache(user: String?, amount: Int) {
+    private fun setUserBalanceCache(user: String?, amount: Float) {
         connection()
         if (!userExists(user, false)) throw IllegalArgumentException("User must exist")
-        setUserCacheStatement.setInt(1, amount)
+        setUserCacheStatement.setFloat(1, amount)
         setUserCacheStatement.setString(2, user)
         setUserCacheStatement.execute()
         setUserCacheStatement.clearParameters()
@@ -125,14 +144,80 @@ internal object DBHandler {
     fun verifyPassword(user: String, password: String): Boolean {
         connection()
         if (!userExists(user)) return false
-        userPasswordInfo.setString(1, user)
-        val passwordInfo = userPasswordInfo.executeQuery()
-        userPasswordInfo.clearParameters()
-        passwordInfo.next()
-        val salt = passwordInfo.getString("salt")
-        val checkHash = passwordInfo.getString("pw_hash")
+        val salt = getSalt(user)
+        val checkHash = getPassword(user)
         val newHash = hashPassword(password, salt)
 
         return newHash == checkHash
+    }
+
+    fun getPassword(user: String): String {
+        connection()
+        if (!userExists(user)) throw IllegalArgumentException("User must exist")
+        getUserPassword.setString(1, user)
+        val resultSet = getUserPassword.executeQuery()
+        resultSet.next()
+        val password = resultSet.getString(1)
+        getUserPassword.clearParameters()
+        return password
+    }
+
+    fun getSalt(user: String): String {
+        connection()
+        if (!userExists(user)) throw IllegalArgumentException("User must exist")
+        getUserSalt.setString(1, user)
+        val resultSet = getUserSalt.executeQuery()
+        resultSet.next()
+        val salt = resultSet.getString(1)
+        getUserSalt.clearParameters()
+        return salt
+    }
+
+    fun createSession(user: String, expiry: Timestamp): String {
+        val token = hashPassword("${getPassword(user)} / $expiry", getSalt(user) + user)
+        storeSession.setString(1, token)
+        storeSession.setString(2, user)
+        storeSession.setTimestamp(3, expiry)
+        storeSession.execute()
+        storeSession.clearParameters()
+        return token
+    }
+
+    fun getSessionUser(token: String): String? { // (Username, Expiry)
+        connection()
+        getSessionInfo.setString(1, token)
+        val result = getSessionInfo.executeQuery()
+        getSessionInfo.clearParameters()
+        if (result.next()) {
+            val username = result.getString(1)
+            val expiry = result.getTimestamp(2)
+            if (expiry.toInstant().isBefore(Instant.now())) {
+                deleteSession(token)
+                return null
+            }
+            return username
+        } else return null
+    }
+
+    fun deleteSession(token: String?) {
+        connection()
+        clearSession.setString(1, token)
+        clearSession.execute()
+        clearSession.clearParameters()
+    }
+
+    fun isAdmin(username: String?): Boolean {
+        connection()
+        userIsAdmin.setString(1, username)
+        val result = userIsAdmin.executeQuery()
+        userIsAdmin.clearParameters()
+        return if (result.next()) result.getBoolean(1) else false
+    }
+
+    fun makeAdmin(username: String) {
+        connection()
+        makeAdmin.setString(1, username)
+        makeAdmin.execute()
+        makeAdmin.clearParameters()
     }
 }
