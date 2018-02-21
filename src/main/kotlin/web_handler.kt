@@ -8,24 +8,26 @@ import java.time.temporal.ChronoUnit
 
 internal class WebHandler : HttpHandler {
     private final val charset: Charset = Charsets.UTF_8
+    private final val prefix: String = ""
 
     override fun handle(t: HttpExchange) {
         try {
+            val cleanRequestPath = t.requestURI.path.replace(Regex("/$"), "").replace(Regex("/tmsacoin"), "/").replace("//", "/").replace(Regex("^$"), "/")
             println("Received request: ${t.requestMethod} ${t.requestURI.path} ; User: ${t.getUser()}")
-            val cleanRequestPath = t.requestURI.path.replace(Regex("/$"), "")
+            println("Clean path: $cleanRequestPath")
             when {
-                cleanRequestPath == "/tmsacoin" -> handleIndex(t)
-                cleanRequestPath == "/tmsacoin/new_account" -> handleNewAccountForm(t)
-                cleanRequestPath == "/tmsacoin/mint" -> handleMintForm(t)
-                cleanRequestPath == "/tmsacoin/transfer" -> handleTransferForm(t)
-                cleanRequestPath == "/tmsacoin/login" -> handleLoginForm(t)
-                cleanRequestPath == "/tmsacoin/balance" -> handleBalanceRequest(t, t.getUser())
-                cleanRequestPath.matches(Regex("/tmsacoin/balance/[a-zA-Z]{1,32}")) -> handleBalanceRequest(t, cleanRequestPath.split("/").last())
-                cleanRequestPath == "/tmsacoin/internal/new_account" -> handleNewAccountRequest(t)
-                cleanRequestPath == "/tmsacoin/internal/mint" -> handleMintRequest(t)
-                cleanRequestPath == "/tmsacoin/internal/transfer" -> handleTransferRequest(t)
-                cleanRequestPath == "/tmsacoin/internal/login" -> handleLoginRequest(t)
-                cleanRequestPath == "/tmsacoin/internal/logout" -> handleLogoutRequest(t)
+                cleanRequestPath == "/" -> handleIndex(t)
+                cleanRequestPath == "/new_account" -> handleNewAccountForm(t)
+                cleanRequestPath == "/mint" -> handleMintForm(t)
+                cleanRequestPath == "/transfer" -> handleTransferForm(t)
+                cleanRequestPath == "/login" -> handleLoginForm(t)
+                cleanRequestPath == "/balance" -> handleBalanceRequest(t, t.getUser())
+                cleanRequestPath.matches(Regex("/balance/[a-zA-Z]{1,32}")) -> handleBalanceRequest(t, cleanRequestPath.split("/").last())
+                cleanRequestPath == "/internal/new_account" -> handleNewAccountRequest(t)
+                cleanRequestPath == "/internal/mint" -> handleMintRequest(t)
+                cleanRequestPath == "/internal/transfer" -> handleTransferRequest(t)
+                cleanRequestPath == "/internal/login" -> handleLoginRequest(t)
+                cleanRequestPath == "/internal/logout" -> handleLogoutRequest(t)
                 else -> handleNotFound(t)
             }
         } catch (e: Throwable) {
