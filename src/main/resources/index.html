@@ -2,18 +2,99 @@
 <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <title>Title</title>
+        <title>TMSACoin</title>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     </head>
-    <style>
-        a {
-            display: block;
-        }
-    </style>
     <body>
         <h1>Welcome to TMSACoin!</h1>
-        <a href="/login">Login</a>
-        <a href="/new_account">Create a new account</a>
-        <a href="/transfer">Transfer money</a>
-        <a href="/balance">Check your balance</a>
+        <div id="control-panel"/>
+        <script type="text/javascript">
+            $(document).ready(function () {
+                console.log("Ready called");
+                let clearOutdatedToken = function () {
+                    if (localStorage.getItem("token") != null) {
+                        if (Math.floor(Date.now() / 1000) > parseInt(localStorage.getItem("token_expiry"), 10)) {
+                            localStorage.removeItem("token");
+                            localStorage.removeItem("token_expiry");
+                            localStorage.removeItem("user");
+                            localStorage.removeItem("admin");
+                            console.log("Outdated token cleared")
+                        }
+                    }
+                };
+
+                let panel = document.getElementById("control-panel");
+
+                if (localStorage.getItem("token") != null) {
+                    console.log("Old token found, performing checks.");
+                    clearOutdatedToken();
+                    panel.innerText = "Loading... Please refresh if this messages appears for more than 2 seconds.";
+
+                    $.ajax({
+                        type: "POST",
+                        url: "/internal/check_session",
+                        data: JSON.stringify({
+                            token: localStorage.getItem("token")
+                        }),
+                        dataType: "json",
+                        contentType: "application/json",
+                        success: function (response) {
+                            if (response.valid === true) {
+                                let username = response.user;
+
+                                panel.innerHTML = `
+                                    <p>You are logged in as <b>${username}</b></p>
+                                    <ul style="list-style-type: none; padding-left: 0;">
+                                        <li><a href="/login">Login as a different user</a></li>
+                                        <li><a href="" id="logout-link">Logout</a></li>
+                                        <li><a href="/transfer">Transfer money</a></li>
+                                        <li><a href="/balance/${username}">Check your balance</a></li>
+                                    </ul>`;
+
+                                console.log("Adding event listener.");
+
+                                if (response.admin === true) {
+                                    panel.innerHTML += `
+                                        <p>
+                                        <h3>Admin</h3>
+                                        <ul style="list-style-type: none; padding-left: 0; margin-top: 0;">
+                                            <li><a href='/mint'>Mint new tokens</a></li>
+                                            <li><a href="/new_account">Create a new account</a></li>
+                                        </ul>`;
+                                }
+
+                                $("#logout-link").on("click", function (event) {
+                                    event.preventDefault();
+                                    $.ajax("/internal/logout", {
+                                        type: "POST",
+                                        data: JSON.stringify({
+                                            token: localStorage.getItem("token")
+                                        }),
+                                        dataType: "json",
+                                        contentType: "application/json",
+                                        success: function() {
+                                            console.log("Logged out, reloading.")
+                                            location.reload()
+                                        }
+                                    })
+                                });
+                            } else {
+                                panel.innerHTML = "<i>You must <a style=\"display: inline;\" href=\"/login\">login</a> to use TMSACoin</i>";
+                                localStorage.removeItem("token");
+                                localStorage.removeItem("token_expiry");
+                                localStorage.removeItem("user");
+                                localStorage.removeItem("admin");
+                            }
+                        }
+                    });
+
+                    console.log("AJAX request sent.")
+                } else {
+                    console.log("No token, prompting for login");
+                    panel.innerHTML = "<i>You must <a style=\"display: inline;\" href=\"/login\">login</a> to use TMSACoin</i>";
+                }
+            });
+        </script>
     </body>
 </html>

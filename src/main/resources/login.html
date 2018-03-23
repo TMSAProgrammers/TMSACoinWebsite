@@ -3,12 +3,38 @@
     <head>
         <meta charset="UTF-8">
         <title>TMSACoin Login</title>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     </head>
     <body>
-        <form action="/internal/login" method="post">
+        <form id="form" method="post">
             <pre style="display: block">Username: <input type="text" name="username"></pre>
-            <pre style="display: block">Password: <input type="text" name="password"></pre>
-            <input type="submit">
+            <pre style="display: block">Password: <input type="password" name="password"></pre>
+            <input type="button" value="Submit" id="submit">
         </form>
+
+        <script type="text/javascript">
+            $("#submit").click(function () {
+                $.ajax({
+                    type: "POST",
+                    url: "/internal/login",
+                    data: JSON.stringify({
+                        username: $("#form input[name=username]").val(),
+                        password: $("#form input[name=password]").val()
+                    }),
+                    dataType: "json",
+                    contentType: "application/json",
+                    success: function(response) {
+                        console.log(response);
+                        // rJson = JSON.parse(response);
+                        localStorage.setItem("token", response.session.token);
+                        localStorage.setItem("token_expiry", Math.floor(Date.now() / 1000) + response.session.max_age);
+                        localStorage.setItem("user", response.session.user.name);
+                        localStorage.setItem("admin", response.session.user.admin);
+                        location.href = "/"
+                    }
+                })
+            });
+        </script>
     </body>
 </html>

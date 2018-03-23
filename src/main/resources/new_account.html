@@ -3,14 +3,38 @@
     <head>
         <meta charset="UTF-8">
         <title>TMSACoin Account Creation</title>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     </head>
     <body>
-        <h1>Please don't create an account. I can't handle it!</h1>
-        <form action="/internal/new_account" method="post">
+        <form id="form" method="post">
             <pre style="display: block">Username: <input type="text" name="username"></pre>
-            <pre style=fdasf"display: block">Password: <input type="text" name="password"></pre>
-            <pre style="display: block">Is Admin: <input type="checkbox" name="admin"></pre>
-            <input type="submit" value="Submit">
+            <pre style="display: block">Password: <input type="password" name="password"></pre>
+            <script type="text/javascript">
+                if (localStorage.getItem("admin") === "true") {
+                    document.write("            <pre style=\"display: block\">Is Admin: <input type=\"checkbox\" name=\"admin\"></pre>\n");
+                }
+            </script>
+            <input type="button" value="Submit" id="submit">
         </form>
+
+        <script type="text/javascript">
+            $("#submit").click(function () {
+                $.ajax({
+                    type: "POST",
+                    url: "/internal/new_account",
+                    data: JSON.stringify({
+                        username: $("#form input[name=username]").val(),
+                        password: $("#form input[name=password]").val(),
+                        is_admin: $("#form input[name=admin]").is(":checked")
+                    }),
+                    dataType: "json",
+                    contentType: "application/json",
+                    success: function() {
+                        location.href = "/";
+                    }
+                })
+            });
+        </script>
     </body>
 </html>

@@ -3,12 +3,33 @@
     <head>
         <meta charset="UTF-8">
         <title>TMSACoin Mint</title>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     </head>
     <body>
-        <form action="/internal/mint" method="post">
+        <form id="form" method="post">
             <pre style="display: block">Recipient: <input type="text" name="recipient"></pre>
             <pre style="display: block">Amount:    <input type="number" name="amount"></pre>
-            <input type="submit">
+            <input type="button" value="Submit" id="submit">
         </form>
+
+        <script type="text/javascript">
+            $("#submit").click(function () {
+                $.ajax({
+                    type: "POST",
+                    url: "/internal/mint",
+                    data: JSON.stringify({
+                        recipient: $("#form input[name=recipient]").val(),
+                        amount: $("#form input[name=amount]").val(),
+                        token: localStorage.getItem("token")
+                    }),
+                    dataType: "json",
+                    contentType: "application/json",
+                    success: function() {
+                        location.href = "/";
+                    }
+                })
+            });
+        </script>
     </body>
 </html>

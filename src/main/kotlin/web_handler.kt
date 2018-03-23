@@ -1,38 +1,71 @@
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpHandler
+import org.json.JSONObject
 import java.nio.charset.Charset
 import java.sql.Timestamp
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 
-internal class WebHandler : HttpHandler {
+internal class WebHandler() : HttpHandler {
     private final val charset: Charset = Charsets.UTF_8
     private final val prefix: String = ""
+    private final val requestCount = AtomicInteger()
 
-    override fun handle(t: HttpExchange) {
-        try {
-            val cleanRequestPath = t.requestURI.path.replace(Regex("/$"), "").replace(Regex("/tmsacoin"), "/").replace("//", "/").replace(Regex("^$"), "/")
-            println("Received request: ${t.requestMethod} ${t.requestURI.path} ; User: ${t.getUser()}")
-            println("Clean path: $cleanRequestPath")
-            when {
-                cleanRequestPath == "/" -> handleIndex(t)
-                cleanRequestPath == "/new_account" -> handleNewAccountForm(t)
-                cleanRequestPath == "/mint" -> handleMintForm(t)
-                cleanRequestPath == "/transfer" -> handleTransferForm(t)
-                cleanRequestPath == "/login" -> handleLoginForm(t)
-                cleanRequestPath == "/balance" -> handleBalanceRequest(t, t.getUser())
-                cleanRequestPath.matches(Regex("/balance/[a-zA-Z]{1,32}")) -> handleBalanceRequest(t, cleanRequestPath.split("/").last())
-                cleanRequestPath == "/internal/new_account" -> handleNewAccountRequest(t)
-                cleanRequestPath == "/internal/mint" -> handleMintRequest(t)
-                cleanRequestPath == "/internal/transfer" -> handleTransferRequest(t)
-                cleanRequestPath == "/internal/login" -> handleLoginRequest(t)
-                cleanRequestPath == "/internal/logout" -> handleLogoutRequest(t)
-                else -> handleNotFound(t)
+    init {
+        println("WebHandler initialized")
+    }
+
+    override fun handle(httpExchange: HttpExchange) {
+        thread {
+            try {
+                val cleanRequestPath = httpExchange.requestURI.path.replace(Regex("/$"), "").replace(Regex("/tmsacoin"), "/").replace("//", "/").replace(Regex("^$"), "/")
+                println("Received request #${requestCount.incrementAndGet()}: ${httpExchange.requestMethod} ${httpExchange.requestURI.path}")
+                when {
+                    cleanRequestPath == "$prefix/" -> handleIndex(httpExchange)
+                    cleanRequestPath == "$prefix/new_account" -> handleNewAccountForm(httpExchange)
+                    cleanRequestPath == "$prefix/mint" -> handleMintForm(httpExchange)
+                    cleanRequestPath == "$prefix/transfer" -> handleTransferForm(httpExchange)
+                    cleanRequestPath == "$prefix/login" -> handleLoginForm(httpExchange)
+                    cleanRequestPath == "$prefix/balance" -> handleBalanceRequest(httpExchange, httpExchange.getUser())
+                    cleanRequestPath.matches(Regex("$prefix/balance/[^/]{1,32}")) -> handleBalanceRequest(httpExchange, cleanRequestPath.split("/").last())
+                    cleanRequestPath == "$prefix/internal/new_account" -> handleNewAccountRequest(httpExchange)
+                    cleanRequestPath == "$prefix/internal/mint" -> handleMintRequest(httpExchange)
+                    cleanRequestPath == "$prefix/internal/transfer" -> handleTransferRequest(httpExchange)
+                    cleanRequestPath == "$prefix/internal/login" -> handleLoginRequest(httpExchange)
+                    cleanRequestPath == "$prefix/internal/logout" -> handleLogoutRequest(httpExchange)
+                    cleanRequestPath == "$prefix/internal/check_session" -> handleSessionCheckRequest(httpExchange)
+                    else -> handleNotFound(httpExchange)
+                }
+            } catch (e: Throwable) {
+                e.printStackTrace()
+                httpExchange.setResponseTypeJSON()
+                val error = JSONObject().put("success", false).put("error", "internal")
+                httpExchange.sendError(json = error)
+            } finally {
+                httpExchange.close()
             }
-        } catch (e: Throwable) {
-            e.printStackTrace()
-            t.sendError(text = "Internal error")
+        }
+    }
+
+    private fun handleSessionCheckRequest(httpExchange: HttpExchange) {
+        httpExchange.requirePost()
+        val json = httpExchange.getJSON()
+        if (json == null || !json.has("token")) {
+            httpExchange.sendDefaultMalformed()
+            return
+        }
+
+        httpExchange.setResponseTypeJSON()
+
+        val token = json.getString("token")
+        val sessionUser = DBHandler.getSessionUser(token)
+        if (sessionUser != null) {
+            httpExchange.sendSuccess(json = JSONObject().put("valid", true).put("user", sessionUser).put("admin", DBHandler.isAdmin(sessionUser)))
+        } else {
+            httpExchange.sendSuccess(json = JSONObject().put("valid", false))
         }
     }
 
@@ -45,11 +78,7 @@ internal class WebHandler : HttpHandler {
     }
 
     private fun handleMintForm(httpExchange: HttpExchange) {
-        if (DBHandler.isAdmin(httpExchange.getUser())) {
-            httpExchange.sendSuccess(fileName = "mint.html")
-        } else {
-            httpExchange.sendUnauthorized(text = "You are not authorized to mint TMSACoin.")
-        }
+        httpExchange.sendSuccess(fileName = "mint.html")
     }
 
     private fun handleTransferForm(httpExchange: HttpExchange) {
@@ -61,88 +90,140 @@ internal class WebHandler : HttpHandler {
     }
 
     private fun handleBalanceRequest(httpExchange: HttpExchange, user: String?) {
-        httpExchange.sendSuccess(text =
-        """
-            <pre>Balance of $user: ${DBHandler.getUserBalance(user)}</pre>
-        """.trimIndent())
+        httpExchange.sendSuccess(json = JSONObject().put("balance", DBHandler.getUserBalance(user)))
+        return
     }
 
     private fun handleNewAccountRequest(httpExchange: HttpExchange) {
         httpExchange.requirePost()
-        httpExchange.requireParameter("username")
-        httpExchange.requireParameter("password")
-        val createResult = DBHandler.createUser(httpExchange.parameter("username"), httpExchange.parameter("password"))
-        if (DBHandler.isAdmin(httpExchange.getUser()) &&
-                httpExchange.hasParameter("admin") &&
-                httpExchange.parameter("admin") == "on") {
 
-            DBHandler.makeAdmin(httpExchange.parameter("username"))
+        val json = httpExchange.getJSON()
+
+        if (json == null || !json.has("username") || !json.has("password")) {
+            httpExchange.sendDefaultMalformed()
+            return
         }
+
+        val createResult = DBHandler.createUser(json.getString("username"), json.getString("password"))
+        if (DBHandler.isAdmin(httpExchange.getUser()) &&
+                json.has("admin") &&
+                json.optBoolean("admin")) {
+
+            DBHandler.makeAdmin(json.getString("username"))
+        }
+        val response = JSONObject().put("success", createResult.first)
+
+        httpExchange.setResponseTypeJSON()
+
         if (createResult.first) {
-            httpExchange.sendSuccess(text = "Done.")
+            httpExchange.sendSuccess(json = response)
         } else {
-            httpExchange.sendError(text = createResult.second)
+            response.put("error", createResult.second)
+            httpExchange.sendError(json = response)
         }
     }
 
     private fun handleMintRequest(httpExchange: HttpExchange) {
         if (DBHandler.isAdmin(httpExchange.getUser())) {
             httpExchange.requirePost()
-            httpExchange.requireParameter("recipient")
-            httpExchange.requireParameter("amount")
-            val storeResult = DBHandler.storeTransaction(null, httpExchange.parameter("recipient"), httpExchange.parameter("amount").toFloat())
+
+            val json = httpExchange.getJSON()
+
+            if (json == null || !json.has("recipient") || json.optFloat("amount") == Float.NaN) {
+                httpExchange.sendDefaultMalformed()
+                return
+            }
+
+            val storeResult = DBHandler.storeTransaction(null, json.getString("recipient"), json.getFloat("amount"))
+            httpExchange.setResponseTypeJSON()
+            val response = JSONObject().put("success", storeResult.first)
             if (storeResult.first) {
-                httpExchange.sendSuccess(text = "Done.")
+                httpExchange.sendSuccess(json = response)
             } else {
-                httpExchange.sendError(text = storeResult.second)
+                response.put("error", storeResult.second)
+                httpExchange.sendError(json = response)
             }
         } else {
-            httpExchange.sendUnauthorized(text = "You are not authorized to mint TMSACoin.")
+            val response = JSONObject().put("success", false).put("error", "unauthorized")
+            httpExchange.sendUnauthorized(json = response)
         }
     }
 
     private fun handleTransferRequest(httpExchange: HttpExchange) {
         httpExchange.requirePost()
-        httpExchange.requireParameter("to")
-        httpExchange.requireParameter("amount")
-        val storeResult = DBHandler.storeTransaction(httpExchange.getUser(), httpExchange.parameter("to"), httpExchange.parameter("amount").toFloat())
+
+        val json = httpExchange.getJSON()
+
+        if (json == null || !json.has("to") || json.optFloat("amount") == Float.NaN) {
+            httpExchange.sendDefaultMalformed()
+            return
+        }
+
+        val storeResult = DBHandler.storeTransaction(httpExchange.getUser(), json.getString("to"), json.getFloat("amount"))
+        httpExchange.setResponseTypeJSON()
+        val response = JSONObject().put("success", storeResult.first)
         if (storeResult.first) {
-            httpExchange.sendSuccess(text = "Done.")
+            httpExchange.sendSuccess(json = response)
         } else {
-            httpExchange.sendError(text = storeResult.second)
+            response.put("error", storeResult.second)
+            httpExchange.sendError(json = response)
         }
     }
 
     private fun handleLoginRequest(httpExchange: HttpExchange) {
         httpExchange.requirePost()
-        httpExchange.requireParameter("username")
-        httpExchange.requireParameter("password")
 
-//        handleLogoutRequest(httpExchange) // Delete pre-existing token
+        val json = httpExchange.getJSON()
 
-        val username = httpExchange.parameter("username")
-        val password = httpExchange.parameter("password")
+        if (json == null || !json.has("username") || !json.has("password")) {
+            httpExchange.sendDefaultMalformed()
+            return
+        }
+
+        val username = json.getString("username")
+        val password = json.getString("password")
+
+        httpExchange.setResponseTypeJSON()
+        val response = JSONObject()
         if (DBHandler.verifyPassword(username, password)) {
-            httpExchange.writeCookie(
-                    "tmsacoin-session",
-                    DBHandler.createSession(
-                            username,
-                            Timestamp.from(Instant.now().plus(7, ChronoUnit.DAYS))
-                    ),
-                    60 * 60 * 24 * 7
+            val session = DBHandler.createSession(
+                    username,
+                    Timestamp.from(Instant.now().plus(7, ChronoUnit.DAYS))
             )
-            httpExchange.sendSuccess(text = "Login successful.")
+//            httpExchange.writeCookie(
+//                    "tmsacoin-session",
+//                    session,
+//                    60 * 60 * 24 * 7
+//            )
+            response.put("success", true).put("session", JSONObject().put("token", session).put("max_age", 60 * 60 * 24 * 7).put("user", JSONObject().put("name", username).put("admin", DBHandler.isAdmin(username))))
+            httpExchange.sendSuccess(json = response)
         } else {
-            httpExchange.sendUnauthorized(text = "Invalid login.")
+            response.put("success", false)
+            httpExchange.sendUnauthorized(json = response)
         }
     }
 
     private fun handleLogoutRequest(httpExchange: HttpExchange) {
-        DBHandler.deleteSession(httpExchange.getToken())
-        httpExchange.sendSuccess(text = "Done.")
+        val token = httpExchange.getToken()
+
+        if (token == null) {
+            httpExchange.sendDefaultMalformed()
+            return
+        }
+
+        DBHandler.deleteSession(token)
+        httpExchange.setResponseTypeJSON()
+        httpExchange.sendSuccess(json = JSONObject().put("success", "true"))
     }
 
     private fun handleNotFound(httpExchange: HttpExchange) {
         httpExchange.sendNotFound(text = "URL not found.")
     }
+}
+
+internal class DummyHandler: HttpHandler {
+    override fun handle(httpExchange: HttpExchange) {
+        println("${httpExchange.requestMethod} @ ${httpExchange.requestURI.path}")
+    }
+
 }

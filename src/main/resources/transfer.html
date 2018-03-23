@@ -3,12 +3,33 @@
     <head>
         <meta charset="UTF-8">
         <title>TMSACoin Transfer</title>
+
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     </head>
     <body>
-        <form action="/internal/transfer" method="post">
+        <form id="form" method="post">
             <input type="text" name="to">
             <input type="number" name="amount" step="0.01" value="0.00" placeholder="0.00">
-            <input type="submit">
+            <input type="button" id="submit" value="JUST DO IT!">
         </form>
+
+        <script type="text/javascript">
+            $("#submit").click(function () {
+                $.ajax({
+                    type: "POST",
+                    url: "/internal/transfer",
+                    data: JSON.stringify({
+                        to: $("#form input[name=to]").val(),
+                        amount: $("#form input[name=amount]").val(),
+                        token: localStorage.getItem("token")
+                    }),
+                    dataType: "json",
+                    contentType: "application/json",
+                    success: function () {
+                        location.href = "/";
+                    }
+                })
+            });
+        </script>
     </body>
 </html>

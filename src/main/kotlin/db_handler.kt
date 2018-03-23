@@ -19,7 +19,8 @@ internal object DBHandler {
     private lateinit var getUserSalt: PreparedStatement
     private lateinit var storeSession: PreparedStatement
     private lateinit var getSessionInfo: PreparedStatement
-    private lateinit var clearSession: PreparedStatement
+    private lateinit var invalidateSessionID: PreparedStatement
+    private lateinit var deleteUserSessions: PreparedStatement
     private lateinit var userIsAdmin: PreparedStatement
     private lateinit var makeAdmin: PreparedStatement
 
@@ -44,24 +45,25 @@ internal object DBHandler {
     }
 
     private fun ensureTablesExist() {
-        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS transactions(id BIGINT IDENTITY PRIMARY KEY NOT NULL, user_from VARCHAR(32), user_to VARCHAR(32) NOT NULL, amount FLOAT)")
-        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS users(username VARCHAR(32) PRIMARY KEY, isAdmin BOOLEAN DEFAULT FALSE, pw_hash VARCHAR(128) NOT NULL, salt VARCHAR(20) NOT NULL, balance_cache FLOAT DEFAULT 0 NOT NULL)")
+        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS transactions(id BIGINT IDENTITY PRIMARY KEY NOT NULL, sender VARCHAR(32), recipient VARCHAR(32) NOT NULL, amount FLOAT)")
+        connection().createStatement().execute("CREATE TABLE IF NOT EXISTS users(username VARCHAR(32) PRIMARY KEY, is_admin BOOLEAN DEFAULT FALSE, pw_hash VARCHAR(128) NOT NULL, salt VARCHAR(20) NOT NULL, balance_cache FLOAT DEFAULT 0 NOT NULL)")
         connection().createStatement().execute("CREATE TABLE IF NOT EXISTS sessions(token VARCHAR(128) PRIMARY KEY, username VARCHAR(32) NOT NULL, expiry TIMESTAMP NOT NULL)")
     }
 
     private fun initPreparedStatements() {
         getUserCacheStatement = connection().prepareStatement("SELECT balance_cache FROM users WHERE username = ?")
         setUserCacheStatement = connection().prepareStatement("UPDATE users SET balance_cache = ? WHERE username = ?")
-        addTransactionStatement = connection().prepareStatement("INSERT INTO transactions (user_from, user_to, amount) VALUES (?, ?, ?)")
+        addTransactionStatement = connection().prepareStatement("INSERT INTO transactions (sender, recipient, amount) VALUES (?, ?, ?)")
         getUserByUsername = connection().prepareStatement("SELECT * FROM users WHERE username = ?")
         createUser = connection().prepareStatement("INSERT INTO users (username, pw_hash, salt) VALUES (?,?,?)")
         getUserPassword = connection().prepareStatement("SELECT pw_hash FROM users WHERE username = ?")
         getUserSalt = connection().prepareStatement("SELECT salt FROM users WHERE username = ?")
         storeSession = connection().prepareStatement("INSERT INTO sessions (token, username, expiry) VALUES (?,?,?)")
         getSessionInfo = connection().prepareStatement("SELECT username, expiry FROM sessions WHERE token = ?")
-        clearSession = connection().prepareStatement("DELETE FROM sessions WHERE token = ?")
-        userIsAdmin = connection().prepareStatement("SELECT isAdmin FROM users WHERE username = ?")
-        makeAdmin = connection().prepareStatement("UPDATE users SET isAdmin = TRUE WHERE username = ?")
+        invalidateSessionID = connection().prepareStatement("DELETE FROM sessions WHERE token = ?")
+        deleteUserSessions = connection().prepareStatement("DELETE FROM sessions WHERE username = ?")
+        userIsAdmin = connection().prepareStatement("SELECT is_admin FROM users WHERE username = ?")
+        makeAdmin = connection().prepareStatement("UPDATE users SET is_admin = TRUE WHERE username = ?")
     }
 
     fun createUser(username: String, password: String): Pair<Boolean, String?> {
@@ -174,6 +176,8 @@ internal object DBHandler {
     }
 
     fun createSession(user: String, expiry: Timestamp): String {
+        connection()
+        clearUserSessions(user)
         val token = hashPassword("${getPassword(user)} / $expiry", getSalt(user) + user)
         storeSession.setString(1, token)
         storeSession.setString(2, user)
@@ -181,6 +185,13 @@ internal object DBHandler {
         storeSession.execute()
         storeSession.clearParameters()
         return token
+    }
+
+    fun clearUserSessions(user: String) {
+        connection()
+        deleteUserSessions.setString(1, user)
+        deleteUserSessions.execute()
+        deleteUserSessions.clearParameters()
     }
 
     fun getSessionUser(token: String): String? { // (Username, Expiry)
@@ -201,9 +212,9 @@ internal object DBHandler {
 
     fun deleteSession(token: String?) {
         connection()
-        clearSession.setString(1, token)
-        clearSession.execute()
-        clearSession.clearParameters()
+        invalidateSessionID.setString(1, token)
+        invalidateSessionID.execute()
+        invalidateSessionID.clearParameters()
     }
 
     fun isAdmin(username: String?): Boolean {
